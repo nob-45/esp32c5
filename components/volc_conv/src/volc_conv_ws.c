@@ -87,22 +87,24 @@ static esp_err_t build_auth_headers(const volc_conv_credentials_t *cred)
     snprintf(mac_str, sizeof(mac_str), "%02x%02x%02x%02x%02x%02x",
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
-    /* 时间戳用毫秒：与 DynamicRegister 注册成功时一致（平台统一用毫秒） */
-    uint64_t ts_ms = (uint64_t)time(NULL) * 1000ULL;
+    /* WebSocket 建连时间戳用【秒】：文档明确强调与 DynamicRegister（毫秒）不同，
+     * 且服务端有 1 分钟时间窗校验（错误码 30070216/30070217）。 */
+    uint64_t ts_sec = (uint64_t)time(NULL);
     uint32_t rnd = esp_random() & 0x7fffffff;
     char random_num[16];
     snprintf(random_num, sizeof(random_num), "%lu", (unsigned long)rnd);
 
-    /* 规范串：字段顺序与 DynamicRegister 一致
-     * auth_type&device_name&random_num&product_key&timestamp（不含 instance_id），
-     * 仅把签名密钥从 product_secret 换成 device_secret。 */
+    /* 规范串（WebSocket 建连专用，与 DynamicRegister 不同）：
+     * auth_type&device_name&random_num&product_key&timestamp&instance_id
+     * 必须包含 instance_id，签名密钥用 device_secret。 */
     char canon[512];
     snprintf(canon, sizeof(canon),
-             "auth_type=1&device_name=%s&random_num=%s&product_key=%s&timestamp=%llu",
+             "auth_type=1&device_name=%s&random_num=%s&product_key=%s&timestamp=%llu&instance_id=%s",
              cred->device_name,
              random_num,
              CONFIG_VOLC_CONV_PRODUCT_KEY,
-             (unsigned long long)ts_ms);
+             (unsigned long long)ts_sec,
+             CONFIG_VOLC_CONV_INSTANCE_ID);
 
     char sig[64];
     esp_err_t err = hmac_sha256_base64(cred->device_secret, canon, sig, sizeof(sig));
@@ -123,7 +125,7 @@ static esp_err_t build_auth_headers(const volc_conv_credentials_t *cred)
                      CONFIG_VOLC_CONV_PRODUCT_KEY,
                      cred->device_name,
                      random_num,
-                     (unsigned long long)ts_ms,
+                     (unsigned long long)ts_sec,
                      CONFIG_VOLC_CONV_INSTANCE_ID,
                      mac_str,
                      sig);
@@ -131,8 +133,8 @@ static esp_err_t build_auth_headers(const volc_conv_credentials_t *cred)
         ESP_LOGE(TAG, "Header 缓冲不足");
         return ESP_ERR_NO_MEM;
     }
-    ESP_LOGI(TAG, "鉴权 Header 就绪 ts_ms=%llu device=%s",
-             (unsigned long long)ts_ms, cred->device_name);
+    ESP_LOGI(TAG, "鉴权 Header 就绪 ts_sec=%llu device=%s",
+             (unsigned long long)ts_sec, cred->device_name);
     return ESP_OK;
 }
 
