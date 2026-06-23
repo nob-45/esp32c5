@@ -1,0 +1,31 @@
+Flashing to COM18 ...
+Executing action: flash
+Running ninja in directory D:\MyProjects\ESP32-C5\wifi_station\build
+Executing "ninja flash"...
+[1/5] C:\WINDOWS\system32\cmd.exe /C "cd /D D:\MyProjects\ESP32-C5\wifi_station\build\esp-idf\esptool_py && D:\Espressif\python_env\idf5.5_py3.11_env\Scripts\python.exe D:/Espressif/frameworks/esp-idf-v5.5.4/components/partition_table/check_sizes.py --offset 0x8000 partition --type app D:/MyProjects/ESP32-C5/wifi_station/build/partition_table/partition-table.bin D:/MyProjects/ESP32-C5/wifi_station/build/wifi_station.bin"
+wifi_station.bin binary size 0xf9240 bytes. Smallest app partition is 0x400000 bytes. 0x306dc0 bytes (76%) free.
+[2/5] Performing build step for 'bootloader'
+[1/1] C:\WINDOWS\system32\cmd.exe /C "cd /D D:\MyProjects\ESP32-C5\wifi_station\build\bootloader\esp-idf\esptool_py && D:\Espressif\python_env\idf5.5_py3.11_env\Scripts\python.exe D:/Espressif/frameworks/esp-idf-v5.5.4/components/partition_table/check_sizes.py --offset 0x8000 bootloader 0x2000 D:/MyProjects/ESP32-C5/wifi_station/build/bootloader/bootloader.bin"
+Bootloader binary size 0x5670 bytes. 0x990 bytes (10%) free.
+[3/5] No install step for 'bootloader'
+[4/5] Completed 'bootloader'
+[4/5] C:\WINDOWS\system32\cmd.exe /C "cd /D D:\Espressif\frameworks\esp-idf-v5.5.4\components\esptool_py && D:\Espressif\tools\cmake\3.30.2\bin\cmake.exe -D IDF_PATH=D:/Espressif/frameworks/esp-idf-v5.5.4 -D SERIAL_TOOL=D:/Espressif/python_env/idf5.5_py3.11_env/Scripts/python.exe;;D:/Espressif/frameworks/esp-idf-v5.5.4/components/esptool_py/esptool/esptool.py;--chip;esp32c5 -D SERIAL_TOOL_ARGS=--before=default_reset;--after=hard_reset;--no-stub;write_flash;@flash_args -D WORKING_DIRECTORY=D:/MyProjects/ESP32-C5/wifi_station/build -P D:/Espressif/frameworks/esp-idf-v5.5.4/components/esptool_py/run_serial_tool.cmake"
+esptool.py --chip esp32c5 -p COM18 -b 460800 --before=default_reset --after=hard_reset --no-stub write_flash --flash_mode dio --flash_freq 80m --flash_size 16MB 0x2000 bootloader/bootloader.bin 0x10000 wifi_station.bin 0x8000 partition_table/partition-table.bin
+esptool.py v4.12.dev1
+Serial port COM18
+
+A fatal error occurred: Could not open COM18, the port is busy or doesn't exist.
+(could not open port 'COM18': PermissionError(13, '¾Ü¾ø·ÃÎÊ¡£', None, 5))
+
+CMake Error at run_serial_tool.cmake:67 (message):
+  
+  D:/Espressif/python_env/idf5.5_py3.11_env/Scripts/python.exe;;D:/Espressif/frameworks/esp-idf-v5.5.4/components/esptool_py/esptool/esptool.py;--chip;esp32c5
+  failed.
+
+
+
+FAILED: CMakeFiles/flash D:/MyProjects/ESP32-C5/wifi_station/build/CMakeFiles/flash 
+C:\WINDOWS\system32\cmd.exe /C "cd /D D:\Espressif\frameworks\esp-idf-v5.5.4\components\esptool_py && D:\Espressif\tools\cmake\3.30.2\bin\cmake.exe -D IDF_PATH=D:/Espressif/frameworks/esp-idf-v5.5.4 -D SERIAL_TOOL=D:/Espressif/python_env/idf5.5_py3.11_env/Scripts/python.exe;;D:/Espressif/frameworks/esp-idf-v5.5.4/components/esptool_py/esptool/esptool.py;--chip;esp32c5 -D SERIAL_TOOL_ARGS=--before=default_reset;--after=hard_reset;--no-stub;write_flash;@flash_args -D WORKING_DIRECTORY=D:/MyProjects/ESP32-C5/wifi_station/build -P D:/Espressif/frameworks/esp-idf-v5.5.4/components/esptool_py/run_serial_tool.cmake"
+ninja: build stopped: subcommand failed.
+ninja failed with exit code 1, output of the command is in the D:\MyProjects\ESP32-C5\wifi_station\build\log\idf_py_stderr_output_11172 and D:\MyProjects\ESP32-C5\wifi_station\build\log\idf_py_stdout_output_11172
+FLASH_RESULT=2

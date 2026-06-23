@@ -1,0 +1,137 @@
+menu "Example Configuration"
+
+    config ESP_WIFI_SSID
+        string "WiFi SSID"
+        default "myssid"
+        help
+            SSID (network name) for the example to connect to.
+
+    config ESP_WIFI_PASSWORD
+        string "WiFi Password"
+        default "mypassword"
+        help
+            WiFi password (WPA or WPA2) for the example to use.
+
+    choice ESP_WIFI_SAE_MODE
+        prompt "WPA3 SAE mode selection"
+        default ESP_STATION_EXAMPLE_WPA3_SAE_PWE_BOTH
+        help
+            Select mode for SAE as Hunt and Peck, H2E or both.
+        config ESP_STATION_EXAMPLE_WPA3_SAE_PWE_HUNT_AND_PECK
+            bool "HUNT AND PECK"
+        config ESP_STATION_EXAMPLE_WPA3_SAE_PWE_HASH_TO_ELEMENT
+            bool "H2E"
+            depends on ESP_WIFI_ENABLE_SAE_H2E
+        config ESP_STATION_EXAMPLE_WPA3_SAE_PWE_BOTH
+            bool "BOTH"
+            depends on ESP_WIFI_ENABLE_SAE_H2E
+    endchoice
+
+    config ESP_WIFI_PW_ID
+        string "PASSWORD IDENTIFIER"
+        depends on  ESP_STATION_EXAMPLE_WPA3_SAE_PWE_HASH_TO_ELEMENT|| ESP_STATION_EXAMPLE_WPA3_SAE_PWE_BOTH
+        default ""
+        help
+            password identifier for SAE H2E
+
+    config ESP_MAXIMUM_RETRY
+        int "Maximum retry"
+        default 5
+        help
+            Set the Maximum retry to avoid station reconnecting to the AP unlimited when the AP is really inexistent.
+
+    choice ESP_WIFI_SCAN_AUTH_MODE_THRESHOLD
+        prompt "WiFi Scan auth mode threshold"
+        default ESP_WIFI_AUTH_WPA2_PSK
+        help
+            The weakest authmode to accept in the scan mode.
+            This value defaults to ESP_WIFI_AUTH_WPA2_PSK in case password is present and ESP_WIFI_AUTH_OPEN is used.
+            Please select ESP_WIFI_AUTH_WEP/ESP_WIFI_AUTH_WPA_PSK in case AP is operating in WEP/WPA mode.
+
+        config ESP_WIFI_AUTH_OPEN
+            bool "OPEN"
+        config ESP_WIFI_AUTH_WEP
+            bool "WEP"
+        config ESP_WIFI_AUTH_WPA_PSK
+            bool "WPA PSK"
+        config ESP_WIFI_AUTH_WPA2_PSK
+            bool "WPA2 PSK"
+        config ESP_WIFI_AUTH_WPA_WPA2_PSK
+            bool "WPA/WPA2 PSK"
+        config ESP_WIFI_AUTH_WPA3_PSK
+            bool "WPA3 PSK"
+        config ESP_WIFI_AUTH_WPA2_WPA3_PSK
+            bool "WPA2/WPA3 PSK"
+        config ESP_WIFI_AUTH_WAPI_PSK
+            bool "WAPI PSK"
+    endchoice
+
+    menu "OneNET MQTT Configuration"
+
+        config ONENET_MQTT_URI
+            string "OneNET MQTT broker URI"
+            default "mqtt://mqtts.heclouds.com:1883"
+            help
+                OneNET MQTT 服务器地址。普通 MQTT 使用 mqtt://mqtts.heclouds.com:1883。
+
+        config ONENET_PRODUCT_ID
+            string "OneNET Product ID"
+            default "your_product_id"
+            help
+                OneNET 产品 ID。请在 menuconfig 中改成你的真实产品 ID。
+
+        config ONENET_DEVICE_NAME
+            string "OneNET Device Name"
+            default "esp32c5_bme690"
+            help
+                OneNET 设备名称。请在 menuconfig 中改成你的真实设备名称。
+
+        config ONENET_DEVICE_TOKEN
+            string "OneNET Device Secret or Full Token"
+            default "your_device_secret_or_token"
+            help
+                OneNET 设备密钥或完整 token。
+                推荐填写 OneNET 控制台设备详情里的设备密钥，程序会自动生成 MQTT password token。
+                如果你已经手动生成完整 token，也可以直接填写以 version= 开头的完整 token。
+
+        config ONENET_TOKEN_EXPIRE_TIMESTAMP
+            int "OneNET token expire timestamp"
+            default 1893456000
+            help
+                OneNET token 过期时间戳，单位秒。默认 1893456000 约等于 2030-01-01。
+                只有当 ONENET_DEVICE_TOKEN 填写设备密钥时才会使用；如果填写完整 token，则忽略此项。
+
+        config ONENET_PROPERTY_POST_INTERVAL_SECONDS
+            int "Property post interval seconds"
+            default 10
+            range 3 3600
+            help
+                MQTT 属性上报周期，单位秒。
+
+    endmenu
+
+    menu "BME690 I2C Configuration"
+
+        config BME690_I2C_SDA_GPIO
+            int "BME690 I2C SDA GPIO"
+            default 2
+            range 0 28
+            help
+                BME690 的 SDA 接到 ESP32-C5 的有效数字 GPIO。ESP32-SensairShuttle 的 Shuttle Board Connector 默认 SDA=GPIO2。
+
+        config BME690_I2C_SCL_GPIO
+            int "BME690 I2C SCL GPIO"
+            default 3
+            range 0 28
+            help
+                BME690 的 SCL 接到 ESP32-C5 的有效数字 GPIO。ESP32-SensairShuttle 的 Shuttle Board Connector 默认 SCL=GPIO3。
+
+        config BME690_I2C_FREQ_HZ
+            int "BME690 I2C clock frequency"
+            default 100000
+            help
+                I2C 时钟频率，默认 100kHz，适合大多数 BME690 模块。
+
+    endmenu
+
+endmenu
