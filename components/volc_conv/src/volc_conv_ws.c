@@ -50,6 +50,11 @@ static char s_headers[1024];
 /* 上行 base64+JSON 复用缓冲 */
 static char s_tx_buf[8192];
 
+/* 下行 WS 分片重组缓冲（服务端音频消息常被拆成多个 continuation 帧） */
+static char  *s_rx_buf = NULL;
+static size_t s_rx_len = 0;
+static size_t s_rx_cap = 0;
+
 /* ================== 工具函数 ================== */
 
 /* HMAC-SHA256(key,data) → base64，写入 out（需 ≥ 48 字节） */
@@ -144,10 +149,19 @@ static esp_err_t build_auth_headers(const volc_conv_credentials_t *cred)
 static void handle_server_text(const char *data, int len)
 {
     cJSON *root = cJSON_ParseWithLength(data, len);
-    if (!root) return;
+    if (!root) {
+        /* 非 JSON 文本帧，截断打印便于诊断 */
+        ESP_LOGW(TAG, "下行非JSON文本(%d字节): %.*s", len,
+                 len > 200 ? 200 : len, data);
+        return;
+    }
 
     const cJSON *type = cJSON_GetObjectItemCaseSensitive(root, "type");
     if (cJSON_IsString(type) && type->valuestring) {
+        /* 诊断：打印所有下行消息类型（audio.delta 太频繁单独处理） */
+        if (strcmp(type->valuestring, "response.audio.delta") != 0) {
+            ESP_LOGI(TAG, "下行消息 type=%s", type->valuestring);
+        }
         if (strcmp(type->valuestring, "response.audio.delta") == 0) {
             const cJSON *delta = cJSON_GetObjectItemCaseSensitive(root, "delta");
             if (cJSON_IsString(delta) && delta->valuestring) {
@@ -196,8 +210,35 @@ static void ws_event_handler(void *handler_args, esp_event_base_t base,
             ESP_LOGW(TAG, "收到 close 帧");
             s_connected = false;
             if (s_ws_run) s_need_reconnect = true;
-        } else if (d->op_code == 0x01 && d->data_len > 0) {  /* text */
-            handle_server_text((const char *)d->data_ptr, d->data_len);
+        } else if ((d->op_code == 0x01 || d->op_code == 0x00) && d->data_len > 0) {
+            /* text(0x01) 或 continuation(0x00) 帧：按 payload_offset/payload_len 重组。
+             * 火山下行音频消息常超过单帧大小被拆片，必须拼回完整 JSON 再解析。 */
+            int total = d->payload_len;   /* 整条消息总长 */
+            int off   = d->payload_offset;
+
+            if (off == 0) {               /* 新消息开始 */
+                s_rx_len = 0;
+                if (s_rx_cap < (size_t)total + 1) {
+                    char *p = realloc(s_rx_buf, total + 1);
+                    if (!p) {
+                        ESP_LOGE(TAG, "下行缓冲分配失败(%d)", total);
+                        s_rx_cap = 0;
+                        break;
+                    }
+                    s_rx_buf = p;
+                    s_rx_cap = total + 1;
+                }
+            }
+            if (s_rx_buf && s_rx_len + d->data_len <= s_rx_cap) {
+                memcpy(s_rx_buf + s_rx_len, d->data_ptr, d->data_len);
+                s_rx_len += d->data_len;
+            }
+            /* 收齐则解析 */
+            if (s_rx_buf && s_rx_len >= (size_t)total && total > 0) {
+                s_rx_buf[s_rx_len] = '\0';
+                handle_server_text(s_rx_buf, s_rx_len);
+                s_rx_len = 0;
+            }
         }
         break;
 
@@ -239,6 +280,11 @@ static esp_err_t ws_client_create_start(void)
         .buffer_size               = 8192,
         .task_stack                = 6144,
         .task_prio                 = 5,
+        /* WebSocket 层 ping/pong 保活：避免长时间空闲被服务端断开，
+         * 并能及时探测半关闭的死连接（之前 ~160s 后 transport_poll_write 超时）。 */
+        .ping_interval_sec         = 10,
+        .pingpong_timeout_sec      = 20,
+        .disable_pingpong_discon   = false,
     };
 
     s_ws = esp_websocket_client_init(&cfg);
@@ -364,11 +410,12 @@ esp_err_t volc_conv_ws_send_audio(const uint8_t *pcm, size_t len)
         return ESP_ERR_NO_MEM;
     }
 
-    int sent = esp_websocket_client_send_text(s_ws, s_tx_buf, n, pdMS_TO_TICKS(1000));
+    /* 注意：发送失败多为下行音频占用写锁导致的临时超时，并非真断线。
+     * 音频是实时流，丢一帧无妨，绝不能因此触发重连（否则陷入重连死循环）。
+     * 真正的断线由 DISCONNECTED/ERROR/close 事件负责处理。 */
+    int sent = esp_websocket_client_send_text(s_ws, s_tx_buf, n, pdMS_TO_TICKS(200));
     if (sent < 0) {
-        ESP_LOGW(TAG, "上行发送失败");
-        if (s_ws_run) s_need_reconnect = true;
-        return ESP_FAIL;
+        return ESP_FAIL;   /* 静默丢帧，不重连 */
     }
     return ESP_OK;
 }
