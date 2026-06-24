@@ -43,6 +43,12 @@ static volatile bool           s_ws_run = false;        /* 期望保持连接 */
 static volatile bool           s_need_reconnect = false;/* 断线待重连 */
 static TaskHandle_t            s_supervisor = NULL;
 
+/* 会话配置握手状态：
+ *  收到 session.created 后置 s_session_ready，由 supervisor 任务发送
+ *  session.update（不能在 WS 事件回调里发，否则与发送锁竞争）。 */
+static volatile bool           s_session_ready = false;       /* 已收到 session.created */
+static volatile bool           s_session_update_sent = false; /* 已发送 session.update */
+
 /* 鉴权 Header 缓冲：client 在 connect 时引用该指针，需在连接期间保持有效。
  * supervisor 单线程串行重建，故静态安全。 */
 static char s_headers[1024];
@@ -162,7 +168,11 @@ static void handle_server_text(const char *data, int len)
         if (strcmp(type->valuestring, "response.audio.delta") != 0) {
             ESP_LOGI(TAG, "下行消息 type=%s", type->valuestring);
         }
-        if (strcmp(type->valuestring, "response.audio.delta") == 0) {
+        if (strcmp(type->valuestring, "session.created") == 0) {
+            /* 握手第一步完成：置标志，交给 supervisor 任务发 session.update。
+             * 不能在此回调（WS 任务上下文）里直接发送，会与写锁竞争超时。 */
+            s_session_ready = true;
+        } else if (strcmp(type->valuestring, "response.audio.delta") == 0) {
             const cJSON *delta = cJSON_GetObjectItemCaseSensitive(root, "delta");
             if (cJSON_IsString(delta) && delta->valuestring) {
                 size_t b64_len = strlen(delta->valuestring);
@@ -187,6 +197,35 @@ static void handle_server_text(const char *data, int len)
     cJSON_Delete(root);
 }
 
+/* ================== 会话配置（session.update） ================== */
+
+/* 发送 session.update 配置会话。
+ *
+ * 火山 Realtime（OpenAI 兼容）协议要求在 session.created 后，由客户端发送
+ * session.update 显式声明上/下行音频格式与服务端 VAD（turn_detection）。
+ * 否则服务端不知道何时判定一轮说话结束、用什么格式解码上行 PCM，
+ * 结果就是产生一个空响应——只有 response.audio.done 而没有任何 audio.delta。
+ *
+ * 本工程音频固定 PCM16 / 16kHz / 单声道，turn_detection 用 server_vad。 */
+static esp_err_t send_session_update(void)
+{
+    int n = snprintf(s_tx_buf, sizeof(s_tx_buf),
+        "{\"type\":\"session.update\",\"session\":{"
+        "\"input_audio_format\":\"pcm16\","
+        "\"output_audio_format\":\"pcm16\","
+        "\"turn_detection\":{\"type\":\"server_vad\"}"
+        "}}");
+    if (n <= 0 || n >= (int)sizeof(s_tx_buf)) return ESP_ERR_NO_MEM;
+
+    int sent = esp_websocket_client_send_text(s_ws, s_tx_buf, n, pdMS_TO_TICKS(1000));
+    if (sent < 0) {
+        ESP_LOGW(TAG, "session.update 发送失败");
+        return ESP_FAIL;
+    }
+    ESP_LOGI(TAG, "已发送 session.update（pcm16/16k + server_vad）");
+    return ESP_OK;
+}
+
 /* ================== WebSocket 事件 ================== */
 
 static void ws_event_handler(void *handler_args, esp_event_base_t base,
@@ -197,11 +236,16 @@ static void ws_event_handler(void *handler_args, esp_event_base_t base,
     case WEBSOCKET_EVENT_CONNECTED:
         ESP_LOGI(TAG, "WebSocket 已连接");
         s_connected = true;
+        /* 新连接：重置会话握手状态，等待服务端 session.created */
+        s_session_ready = false;
+        s_session_update_sent = false;
         break;
 
     case WEBSOCKET_EVENT_DISCONNECTED:
         ESP_LOGW(TAG, "WebSocket 断开");
         s_connected = false;
+        s_session_ready = false;
+        s_session_update_sent = false;
         if (s_ws_run) s_need_reconnect = true;  /* 交给 supervisor 重建 */
         break;
 
@@ -326,6 +370,15 @@ static void supervisor_task(void *arg)
                 s_need_reconnect = true;  /* 继续重试 */
             }
         }
+
+        /* 握手第二步：收到 session.created 后在本任务上下文发送 session.update。
+         * 放这里而非 WS 事件回调，是为了避开与下行写操作竞争发送锁。 */
+        if (s_session_ready && !s_session_update_sent && volc_conv_ws_is_connected()) {
+            if (send_session_update() == ESP_OK) {
+                s_session_update_sent = true;
+            }
+        }
+
         vTaskDelay(pdMS_TO_TICKS(200));
     }
 
