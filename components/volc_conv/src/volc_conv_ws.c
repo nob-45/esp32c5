@@ -15,6 +15,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 
 #include "esp_log.h"
 #include "esp_websocket_client.h"
@@ -40,6 +41,12 @@ static volatile bool                 s_connected = false;
 
 static volc_conv_credentials_t s_cred;             /* 凭证副本，重连复用 */
 static volatile bool           s_ws_run = false;        /* 期望保持连接 */
+
+/* 应用层发送互斥锁：串行化本模块的所有 send，避免与库内部锁产生堆积竞争。
+ * 音频发送用非阻塞 trylock（抢不到立即丢帧），session.update 用阻塞获取。
+ * 这样同一时刻只有一次应用层发送在飞行，杜绝半死连接卡写时高频音频帧
+ * 刷屏式触发库级 "Could not lock ws-client" 报警。 */
+static SemaphoreHandle_t       s_tx_lock = NULL;
 static volatile bool           s_need_reconnect = false;/* 断线待重连 */
 static TaskHandle_t            s_supervisor = NULL;
 
@@ -217,7 +224,17 @@ static esp_err_t send_session_update(void)
         "}}");
     if (n <= 0 || n >= (int)sizeof(s_tx_buf)) return ESP_ERR_NO_MEM;
 
+    /* 阻塞获取应用层发送锁（session.update 必须成功发出，不能丢）。
+     * 与音频发送串行化，避免和库内部锁产生堆积竞争。 */
+    if (s_tx_lock && xSemaphoreTake(s_tx_lock, pdMS_TO_TICKS(2000)) != pdTRUE) {
+        ESP_LOGW(TAG, "session.update 获取发送锁超时");
+        return ESP_FAIL;
+    }
+
     int sent = esp_websocket_client_send_text(s_ws, s_tx_buf, n, pdMS_TO_TICKS(1000));
+
+    if (s_tx_lock) xSemaphoreGive(s_tx_lock);
+
     if (sent < 0) {
         ESP_LOGW(TAG, "session.update 发送失败");
         return ESP_FAIL;
@@ -399,6 +416,14 @@ esp_err_t volc_conv_ws_start(const volc_conv_credentials_t *cred,
         return ESP_OK;
     }
 
+    if (!s_tx_lock) {
+        s_tx_lock = xSemaphoreCreateMutex();
+        if (!s_tx_lock) {
+            ESP_LOGE(TAG, "发送锁创建失败");
+            return ESP_ERR_NO_MEM;
+        }
+    }
+
     memcpy(&s_cred, cred, sizeof(s_cred));
     s_audio_cb   = audio_cb;
     s_audio_user = user;
@@ -463,10 +488,21 @@ esp_err_t volc_conv_ws_send_audio(const uint8_t *pcm, size_t len)
         return ESP_ERR_NO_MEM;
     }
 
+    /* 应用层发送锁用【非阻塞】trylock：抢不到说明已有一次发送在飞行
+     * （通常是上一帧卡在半死连接的 transport_poll_write 上），此时立即丢弃本帧，
+     * 既不进库、也不会刷屏式触发库级 "Could not lock ws-client" 报警。
+     * 音频是实时流，丢一帧无妨。 */
+    if (s_tx_lock && xSemaphoreTake(s_tx_lock, 0) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;   /* 上一帧仍在发送，静默丢弃本帧 */
+    }
+
     /* 注意：发送失败多为下行音频占用写锁导致的临时超时，并非真断线。
      * 音频是实时流，丢一帧无妨，绝不能因此触发重连（否则陷入重连死循环）。
      * 真正的断线由 DISCONNECTED/ERROR/close 事件负责处理。 */
     int sent = esp_websocket_client_send_text(s_ws, s_tx_buf, n, pdMS_TO_TICKS(200));
+
+    if (s_tx_lock) xSemaphoreGive(s_tx_lock);
+
     if (sent < 0) {
         return ESP_FAIL;   /* 静默丢帧，不重连 */
     }
