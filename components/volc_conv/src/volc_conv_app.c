@@ -37,7 +37,7 @@ static void on_ws_audio(const uint8_t *pcm, size_t len, void *user)
 /* 麦克风 → WebSocket 上行 */
 static esp_err_t on_mic_frame(const uint8_t *pcm, size_t len)
 {
-    if (!volc_conv_ws_is_connected()) return ESP_ERR_INVALID_STATE;
+    if (!volc_conv_ws_is_session_ready()) return ESP_ERR_INVALID_STATE;
     return volc_conv_ws_send_audio(pcm, len);
 }
 
@@ -57,20 +57,21 @@ static void startup_task(void *arg)
         goto end;
     }
 
-    /* 3. 等握手完成。
-     *    开机阶段 SNTP/MQTT/WS 同时抢网络，首次 TLS 握手常超时(~10s)，
-     *    esp_websocket_client 内部会按 reconnect_timeout_ms=5s 自动重连，
-     *    实测约 50~60s 才真正连上，故超时窗放宽到 90s。 */
+    /* 3. 等 WebSocket + session.update 完成。
+     *    ws 模块已禁用 esp_websocket_client 内置重连，改由 supervisor 用新时间戳/
+     *    新签名重建客户端；这里等待完整会话就绪，而不是只等 TCP/WS 连接成功。
+     *    如果过早启动麦克风，input_audio_buffer.append 可能早于 session.update 到达，
+     *    服务端会不知道 PCM16/16k 与 server_vad 配置，表现为空响应或对话无声音。 */
     int wait_ms = 0;
-    while (!volc_conv_ws_is_connected() && wait_ms < 90000 && s_running) {
+    while (!volc_conv_ws_is_session_ready() && wait_ms < 120000 && s_running) {
         vTaskDelay(pdMS_TO_TICKS(200));
         wait_ms += 200;
     }
-    if (!volc_conv_ws_is_connected()) {
-        ESP_LOGE(TAG, "WebSocket 90s 内未连接成功，放弃启动音频");
+    if (!volc_conv_ws_is_session_ready()) {
+        ESP_LOGE(TAG, "WebSocket 会话 120s 内未就绪，放弃启动音频");
         goto end;
     }
-    ESP_LOGI(TAG, "WebSocket 已连接(耗时约 %d ms)，启动音频", wait_ms);
+    ESP_LOGI(TAG, "WebSocket 会话已就绪(耗时约 %d ms)，启动音频", wait_ms);
 
     /* 4. 启动音频采集/播放 */
     err = volc_conv_audio_start(on_mic_frame);
@@ -101,6 +102,11 @@ bool volc_conv_app_start(void)
         return false;
     }
     return true;
+}
+
+void volc_conv_app_audio_selftest(void)
+{
+    volc_conv_audio_selftest();
 }
 
 void volc_conv_app_stop(void)

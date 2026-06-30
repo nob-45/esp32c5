@@ -77,6 +77,7 @@ esp_err_t volc_conv_ws_start(const volc_conv_credentials_t *cred,
                              void *user);
 void      volc_conv_ws_stop(void);
 bool      volc_conv_ws_is_connected(void);
+bool      volc_conv_ws_is_session_ready(void);
 
 /* 发送一段本地采集的 PCM16 音频（内部 base64 后封装为 input_audio_buffer.append 事件） */
 esp_err_t volc_conv_ws_send_audio(const uint8_t *pcm, size_t len);
@@ -91,6 +92,9 @@ void      volc_conv_audio_stop(void);
 
 /* 把下行 PCM16 推到播放队列 */
 esp_err_t volc_conv_audio_play(const uint8_t *pcm, size_t len);
+
+/* 硬件自测：播放提示音测喇叭 + 采集打印峰峰值测麦克风（阻塞约 7 秒，不依赖云端） */
+void volc_conv_audio_selftest(void);
 
 #ifdef __cplusplus
 }

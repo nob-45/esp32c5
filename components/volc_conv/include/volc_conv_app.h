@@ -27,6 +27,11 @@ bool volc_conv_app_start(void);
 /* 停止并释放所有资源 */
 void volc_conv_app_stop(void);
 
+/* 硬件自测：播放提示音测喇叭 + 采集打印峰峰值测麦克风。
+ * 阻塞约 7 秒，不连云端，仅用于排查麦克风/喇叭接线问题。
+ * 在 Wi-Fi/对话启动之前单独调用。 */
+void volc_conv_app_audio_selftest(void);
+
 #ifdef __cplusplus
 }
 #endif

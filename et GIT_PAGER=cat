@@ -1,0 +1,44 @@
+[33mcommit 274942b9dd11cc6926f6c5ad7f4eaa70c728f164[m
+Author: NOB-45 <3274852555@qq.com>
+Date:   Tue Jun 23 09:19:17 2026 +0800
+
+    初始提交：ESP32-C5 WiFi + BME690 + OneNET + 火山引擎对话智能体
+
+ .gitignore                                    |   15 [32m+[m
+ CMakeLists.txt                                |    8 [32m+[m
+ README.md                                     |  125 [32m++[m
+ VolcEngineRTCLite_ref.h                       | 1194 [32m+++++++++++++[m
+ build_errors.txt                              |    0
+ build_log.txt                                 | 1232 [32m+++++++++++++[m
+ components/volc_conv/CMakeLists.txt           |   21 [32m+[m
+ components/volc_conv/idf_component.yml        |    3 [32m+[m
+ components/volc_conv/include/volc_conv_app.h  |   32 [32m+[m
+ components/volc_conv/src/volc_conv_app.c      |  116 [32m++[m
+ components/volc_conv/src/volc_conv_audio.c    |  285 [32m+++[m
+ components/volc_conv/src/volc_conv_internal.h |   97 [32m++[m
+ components/volc_conv/src/volc_conv_register.c |  366 [32m++++[m
+ components/volc_conv/src/volc_conv_ws.c       |  372 [32m++++[m
+ flash_log.txt                                 |   31 [32m+[m
+ idf55.bat                                     |   14 [32m+[m
+ jiaoben/build_incremental.bat                 |   31 [32m+[m
+ jiaoben/build_quiet.bat                       |   20 [32m+[m
+ jiaoben/build_with_idf_env.bat                |   46 [32m+[m
+ jiaoben/flash_with_idf_env.bat                |   22 [32m+[m
+ main/CMakeLists.txt                           |    3 [32m+[m
+ main/Kconfig.projbuild                        |  137 [32m++[m
+ main/idf_component.yml                        |    9 [32m+[m
+ main/station_example_main.c                   | 1262 [32m++++++++++++++[m
+ partitions.csv                                |    6 [32m+[m
+ pytest_wifi_station.py                        |   44 [32m+[m
+ sdkconfig                                     | 2291 [32m+++++++++++++++++++++++++[m
+ sdkconfig.ci                                  |    3 [32m+[m
+ sdkconfig.ci.c3eco7                           |    4 [32m+[m
+ sdkconfig.ci.enable_softap                    |    3 [32m+[m
+ sdkconfig.ci.esp32c2_xtal26m                  |    4 [32m+[m
+ sdkconfig.ci.esp32c2eco4_xtal26m              |    5 [32m+[m
+ sdkconfig.ci.ft                               |    3 [32m+[m
+ sdkconfig.ci.rrm                              |    4 [32m+[m
+ sdkconfig.ci.wnm                              |    4 [32m+[m
+ sdkconfig.ci.wpa_psk                          |    3 [32m+[m
+ sdkconfig.defaults                            |   33 [32m+[m
+ 37 files changed, 7848 insertions(+)

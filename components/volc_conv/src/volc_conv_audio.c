@@ -11,6 +11,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -282,4 +287,130 @@ esp_err_t volc_conv_audio_play(const uint8_t *pcm, size_t len)
         return ESP_ERR_NO_MEM;
     }
     return ESP_OK;
+}
+
+/* ================== 硬件自测（不依赖云端） ==================
+ * 流程：
+ *   1) 喇叭测试：依次播放 440Hz / 880Hz 两段正弦提示音，每段 1 秒。
+ *      若喇叭/功放/接线正常，应能听到两声"嘀"。
+ *   2) 麦克风测试：采集 5 秒，每 200ms 统计一帧的峰峰值(p2p)与直流均值，
+ *      并打印进度条。对着麦克风说话/吹气时 p2p 应明显增大。
+ *
+ * 该函数会阻塞约 7 秒，仅供上电后单独调用，不与正常对话流程并存。
+ */
+void volc_conv_audio_selftest(void)
+{
+    ESP_LOGW(TAG, "========== 音频硬件自测开始 ==========");
+
+    /* ---------- 1. 喇叭测试 ---------- */
+    if (spk_start() != ESP_OK) {
+        ESP_LOGE(TAG, "[自测] 喇叭初始化失败，跳过喇叭测试");
+    } else {
+        const int tone_freqs[] = {440, 880};
+        for (int t = 0; t < 2; ++t) {
+            int freq = tone_freqs[t];
+            ESP_LOGW(TAG, "[自测] 播放 %dHz 提示音 1 秒，请注意听喇叭...", freq);
+            /* 分块生成正弦并送入播放环形队列，1 秒 = 16000 采样 */
+            const int total = VOLC_CONV_AUDIO_SAMPLE_RATE_HZ; /* 1s */
+            const int chunk = 320;
+            int16_t buf[320];
+            for (int done = 0; done < total; done += chunk) {
+                int nthis = (total - done) < chunk ? (total - done) : chunk;
+                for (int i = 0; i < nthis; ++i) {
+                    double ph = 2.0 * M_PI * freq * (double)(done + i) / VOLC_CONV_AUDIO_SAMPLE_RATE_HZ;
+                    buf[i] = (int16_t)(sin(ph) * 12000.0); /* 适中音量 */
+                }
+                /* 等待队列有空间再写，避免丢样 */
+                int retry = 0;
+                while (volc_conv_audio_play((const uint8_t *)buf, nthis * sizeof(int16_t)) != ESP_OK
+                       && retry++ < 100) {
+                    vTaskDelay(pdMS_TO_TICKS(5));
+                }
+            }
+            vTaskDelay(pdMS_TO_TICKS(300)); /* 两声之间停顿 */
+        }
+        ESP_LOGW(TAG, "[自测] 喇叭测试结束。若没听到声音，请检查: 功放使能脚/喇叭接线/SPK GPIO%d/音量",
+                 CONFIG_VOLC_CONV_SPK_PWM_GPIO);
+        spk_stop();
+    }
+
+    /* ---------- 2. 麦克风测试 ---------- */
+    /* 直接用 ADC continuous，不启动上行任务 */
+    adc_continuous_handle_cfg_t handle_cfg = {
+        .max_store_buf_size = MIC_ADC_FRAME_BYTES * 4,
+        .conv_frame_size    = MIC_ADC_FRAME_BYTES,
+    };
+    if (adc_continuous_new_handle(&handle_cfg, &s_adc_handle) != ESP_OK) {
+        ESP_LOGE(TAG, "[自测] 麦克风 ADC 初始化失败");
+        goto done;
+    }
+    adc_digi_pattern_config_t pattern = {
+        .atten     = MIC_ADC_ATTEN,
+        .channel   = MIC_ADC_CHANNEL & 0x7,
+        .unit      = MIC_ADC_UNIT,
+        .bit_width = MIC_ADC_BIT_WIDTH,
+    };
+    adc_continuous_config_t adc_cfg = {
+        .pattern_num    = 1,
+        .adc_pattern    = &pattern,
+        .sample_freq_hz = VOLC_CONV_AUDIO_SAMPLE_RATE_HZ,
+        .conv_mode      = ADC_CONV_SINGLE_UNIT_1,
+        .format         = ADC_DIGI_OUTPUT_FORMAT_TYPE2,
+    };
+    if (adc_continuous_config(s_adc_handle, &adc_cfg) != ESP_OK ||
+        adc_continuous_start(s_adc_handle) != ESP_OK) {
+        ESP_LOGE(TAG, "[自测] 麦克风 ADC 启动失败");
+        adc_continuous_deinit(s_adc_handle);
+        s_adc_handle = NULL;
+        goto done;
+    }
+
+    ESP_LOGW(TAG, "[自测] 麦克风采集 5 秒，请对着麦克风说话/吹气...");
+    uint8_t *adc_buf = malloc(MIC_ADC_FRAME_BYTES);
+    if (adc_buf) {
+        for (int frame = 0; frame < 25; ++frame) { /* 25 × 200ms = 5s */
+            int rawmin = 4095, rawmax = 0;
+            long rawsum = 0;
+            int cnt = 0;
+            /* 200ms 内连续读多帧统计 */
+            int64_t t0 = esp_log_timestamp();
+            while (esp_log_timestamp() - t0 < 200) {
+                uint32_t got = 0;
+                if (adc_continuous_read(s_adc_handle, adc_buf, MIC_ADC_FRAME_BYTES, &got, 100) != ESP_OK)
+                    continue;
+                size_t n = got / SOC_ADC_DIGI_RESULT_BYTES;
+                for (size_t i = 0; i < n; ++i) {
+                    adc_digi_output_data_t *d = (adc_digi_output_data_t *)&adc_buf[i * SOC_ADC_DIGI_RESULT_BYTES];
+                    int raw = d->type2.data;
+                    if (raw < rawmin) rawmin = raw;
+                    if (raw > rawmax) rawmax = raw;
+                    rawsum += raw;
+                    cnt++;
+                }
+            }
+            if (cnt > 0) {
+                int p2p = rawmax - rawmin;
+                int mean = (int)(rawsum / cnt);
+                /* 简单条形图 */
+                int bars = p2p / 50; if (bars > 40) bars = 40;
+                char bar[44]; memset(bar, '#', bars); bar[bars] = 0;
+                ESP_LOGI(TAG, "[自测][MIC] 帧%2d 直流均值=%4d 峰峰值=%4d |%s",
+                         frame, mean, p2p, bar);
+            } else {
+                ESP_LOGW(TAG, "[自测][MIC] 帧%2d 没读到采样(ADC 无数据)", frame);
+            }
+        }
+        free(adc_buf);
+    }
+    adc_continuous_stop(s_adc_handle);
+    adc_continuous_deinit(s_adc_handle);
+    s_adc_handle = NULL;
+
+    ESP_LOGW(TAG, "[自测] 麦克风测试结束。判断标准:");
+    ESP_LOGW(TAG, "[自测]   - 安静时峰峰值小、说话时峰峰值明显变大 => 麦克风正常");
+    ESP_LOGW(TAG, "[自测]   - 峰峰值始终≈0 或恒定不变 => 麦克风没接好/MIC GPIO%d 错误/无偏置",
+             CONFIG_VOLC_CONV_MIC_ADC_GPIO);
+
+done:
+    ESP_LOGW(TAG, "========== 音频硬件自测结束 ==========");
 }

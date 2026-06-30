@@ -50,6 +50,10 @@ static SemaphoreHandle_t       s_tx_lock = NULL;
 static volatile bool           s_need_reconnect = false;/* 断线待重连 */
 static TaskHandle_t            s_supervisor = NULL;
 
+/* 服务端送了致命错误(quota/license/401/403 等), supervisor 只 destroy 不重建, 
+ * 避免被服务端持续拒接造成重连风暴。本地也设 s_fatal, 外面调 stop/start 可重置。 */
+static volatile bool           s_fatal_error = false;
+
 /* 会话配置握手状态：
  *  收到 session.created 后置 s_session_ready，由 supervisor 任务发送
  *  session.update（不能在 WS 事件回调里发，否则与发送锁竞争）。 */
@@ -197,7 +201,53 @@ static void handle_server_text(const char *data, int len)
             }
         } else if (strcmp(type->valuestring, "error") == 0) {
             char *s = cJSON_PrintUnformatted(root);
-            ESP_LOGW(TAG, "服务端 error: %s", s ? s : "(null)");
+            ESP_LOGE(TAG, "服务端 error: %s", s ? s : "(null)");
+            /* 火山 Realtime 错误包型可能是 {type:"error", code:1000003, message:...}
+             * 也可能是 OpenAI 兼容格式 {type:"error", error:{code,message}}。
+             * 两者都认。识别常见的费率/额度/鉴权类错误, 这些错误重连无意义,
+             * 反而会被服务端持续拒接, 主动断开避免重连风暴。 */
+            bool fatal = false;
+            if (s) {
+                /* 1000003 = AI license duration quota exceeded (火山限流)
+                 * 401/403/300702xx = 鉴权错误
+                 * 这些都是永久错, 不要重连 */
+                if (strstr(s, "1000003") || strstr(s, "quota") ||
+                    strstr(s, "license")  || strstr(s, "401") ||
+                    strstr(s, "403")      || strstr(s, "300702") ||
+                    strstr(s, "expired")) {
+                    ESP_LOGE(TAG, "识别到致命错误: 停止自动重连");
+                    fatal = true;
+                }
+            }
+            /* 顺手认一下嵌套 error.code 字段 */
+            const cJSON *err = cJSON_GetObjectItemCaseSensitive(root, "error");
+            if (!cJSON_IsObject(err)) {
+                /* 火山格式: code/message 在根上 */
+                const cJSON *code = cJSON_GetObjectItemCaseSensitive(root, "code");
+                const cJSON *msg  = cJSON_GetObjectItemCaseSensitive(root, "message");
+                if (cJSON_IsString(code) && code->valuestring &&
+                    (strstr(code->valuestring, "1000003") ||
+                     strstr(code->valuestring, "quota") ||
+                     strstr(code->valuestring, "license"))) {
+                    fatal = true;
+                }
+                if (cJSON_IsString(msg) && msg->valuestring &&
+                    (strstr(msg->valuestring, "quota") ||
+                     strstr(msg->valuestring, "license") ||
+                     strstr(msg->valuestring, "expired"))) {
+                    fatal = true;
+                }
+            }
+            if (fatal) {
+                /* 清除需重连标志, supervisor 看到 fatal 就不重建了。*/
+                s_connected = false;
+                s_session_ready = false;
+                s_session_update_sent = false;
+                s_fatal_error = true;
+                /* 仍设需重连以让 supervisor 去销 client, 但 supervisor 会先
+                 * 检查 s_fatal_error 并仅 destroy 不重建。 */
+                s_need_reconnect = true;
+            }
             if (s) free(s);
         }
     }
@@ -317,12 +367,16 @@ static void ws_event_handler(void *handler_args, esp_event_base_t base,
 
 static void ws_client_destroy(void)
 {
+    /* 拿应用层锁, 杜绝 mic_task 持锁期间 s_ws 被 destroy 后后续 esp_websocket_client_send_text
+     * 解引用 NULL 指针 → panic 6000…supervisor 独享 destroy 路径, 取锁不会死锁。 */
+    if (s_tx_lock) xSemaphoreTake(s_tx_lock, pdMS_TO_TICKS(2000));
     if (s_ws) {
         esp_websocket_client_close(s_ws, pdMS_TO_TICKS(1000));
         esp_websocket_client_destroy(s_ws);
         s_ws = NULL;
     }
     s_connected = false;
+    if (s_tx_lock) xSemaphoreGive(s_tx_lock);
 }
 
 /* 用最新鉴权 Header 创建并启动客户端 */
@@ -368,9 +422,11 @@ static esp_err_t ws_client_create_start(void)
 
 static void supervisor_task(void *arg)
 {
-    /* 首次连接 */
+    /* 首次连接。若 DNS/TLS/握手在开机抢网阶段失败，必须交给本任务继续重试；
+     * esp_websocket_client 内置重连已禁用，不能再依赖库自动重连。 */
     if (ws_client_create_start() != ESP_OK) {
-        ESP_LOGE(TAG, "首次连接启动失败");
+        ESP_LOGE(TAG, "首次连接启动失败，进入重试流程");
+        s_need_reconnect = true;
     }
 
     while (s_ws_run) {
@@ -378,14 +434,27 @@ static void supervisor_task(void *arg)
             s_need_reconnect = false;
             ESP_LOGW(TAG, "检测到断线，重建客户端（刷新时间戳/签名）");
             ws_client_destroy();
-            /* 退避，避免握手风暴 */
+            /* 退退，避免握手风暴 */
             for (int i = 0; i < 30 && s_ws_run; ++i) vTaskDelay(pdMS_TO_TICKS(100));
             if (!s_ws_run) break;
+            /* 致命错误（quota/license 等）: 不重建, 只清状态后退出。 */
+            if (s_fatal_error) {
+                ESP_LOGE(TAG, "服务侧持的限流/鉴权错误: 不再重连, 保留 sup 存活以便 stop() 优雅退出");
+                /* 重要: s_need_reconnect 不能另设 true, 否则会進死循环重新 destroy。
+                 * 进入空轮询, 仅在 stop() 设 s_ws_run=false 后才退出。 */
+                vTaskDelay(pdMS_TO_TICKS(1000));
+                continue;
+            }
             if (ws_client_create_start() != ESP_OK) {
                 ESP_LOGE(TAG, "重建失败，5s 后再试");
                 for (int i = 0; i < 50 && s_ws_run; ++i) vTaskDelay(pdMS_TO_TICKS(100));
                 s_need_reconnect = true;  /* 继续重试 */
             }
+        } else if (s_fatal_error) {
+            /* 连接还连着但服务端已发过致命 error: 静默轮询等 stop()。
+             * 不手动断, 让服务端 close 帧驱动 DISCONNECTED 后再走重建流程的 fatal 分支。 */
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
         }
 
         /* 握手第二步：收到 session.created 后在本任务上下文发送 session.update。
@@ -459,9 +528,14 @@ bool volc_conv_ws_is_connected(void)
     return s_connected && s_ws && esp_websocket_client_is_connected(s_ws);
 }
 
+bool volc_conv_ws_is_session_ready(void)
+{
+    return volc_conv_ws_is_connected() && s_session_ready && s_session_update_sent;
+}
+
 esp_err_t volc_conv_ws_send_audio(const uint8_t *pcm, size_t len)
 {
-    if (!volc_conv_ws_is_connected()) return ESP_ERR_INVALID_STATE;
+    if (!volc_conv_ws_is_session_ready()) return ESP_ERR_INVALID_STATE;
     if (!pcm || len == 0) return ESP_ERR_INVALID_ARG;
 
     /* base64 编码 PCM */

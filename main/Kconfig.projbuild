@@ -2,13 +2,13 @@ menu "Example Configuration"
 
     config ESP_WIFI_SSID
         string "WiFi SSID"
-        default "myssid"
+        default "Redmi_B3D4_5G"
         help
             SSID (network name) for the example to connect to.
 
     config ESP_WIFI_PASSWORD
         string "WiFi Password"
-        default "mypassword"
+        default "88888888"
         help
             WiFi password (WPA or WPA2) for the example to use.
 
@@ -65,6 +65,15 @@ menu "Example Configuration"
         config ESP_WIFI_AUTH_WAPI_PSK
             bool "WAPI PSK"
     endchoice
+
+    config VOLC_AUDIO_SELFTEST
+        bool "启动时运行音频自测（喇叭提示音 + 麦克风峰峰值）"
+        default n
+        help
+            打开后，设备在连接 Wi-Fi 之前先阻塞约 7 秒：
+            先向喇叭输出一段提示音（测试 LEDC PWM 喇叭接线），
+            再采集麦克风并打印 ADC 峰峰值（测试麦克风接线）。
+            仅用于排查麦克风/喇叭硬件问题，确认正常后请关闭。
 
     menu "OneNET MQTT Configuration"
 
